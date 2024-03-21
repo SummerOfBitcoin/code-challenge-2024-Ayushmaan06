@@ -5,7 +5,7 @@ import binascii
 import ecdsa
 import multiprocessing
 import numpy
-
+#lets go
 # Constants
 DIFFICULTY_TARGET = "0000ffff00000000000000000000000000000000000000000000000000000000"
 MAX_BLOCK_SIZE = 1000000  # Maximum block size in bytes
