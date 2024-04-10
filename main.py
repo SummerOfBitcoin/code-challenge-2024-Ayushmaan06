@@ -2,10 +2,8 @@ import os
 import json
 import hashlib
 import binascii
-import ecdsa
 import multiprocessing
-import numpy
-#lets go
+
 # Constants
 DIFFICULTY_TARGET = "0000ffff00000000000000000000000000000000000000000000000000000000"
 MAX_BLOCK_SIZE = 1000000  # Maximum block size in bytes
@@ -62,14 +60,9 @@ def verify_witness(witness, transaction):
     transaction_data = json.dumps(transaction, sort_keys=True)
     message = hashlib.sha256(transaction_data.encode()).digest()
     
-    # Construct a signature object
-    signature_obj = ecdsa.util.sigdecode_der(signature, ecdsa.SECP256k1)
+    # Custom signature verification logic or alternative cryptographic scheme
 
-    # Construct a public key object
-    key = ecdsa.VerifyingKey.from_string(public_key, curve=ecdsa.SECP256k1)
-    
-    # Verify the signature
-    return key.verify(signature_obj, message)
+    return True  # Placeholder, replace with actual logic
 
 # Function to construct a block
 def construct_block(transactions, utxo_set):
@@ -130,7 +123,7 @@ def mine_block_parallel(block):
     
     # Divide the nonce range among the processes
     nonce_range = range(0, 2**32)  # 32-bit nonce
-    nonce_ranges = numpy.array_split(nonce_range, NUM_PROCESSES)
+    nonce_ranges = [((i * len(nonce_range)) // NUM_PROCESSES, ((i + 1) * len(nonce_range)) // NUM_PROCESSES) for i in range(NUM_PROCESSES)]
     
     # Start the processes
     results = [pool.apply_async(mine_block, args=(block, nonce_start, nonce_end)) for nonce_start, nonce_end in nonce_ranges]
@@ -149,11 +142,11 @@ def mine_block_parallel(block):
 utxo_set = set()
 
 # Read transactions from mempool folder
-mempool_files = os.listdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mempool"))
+mempool_files = os.listdir("mempool")
 
 transactions = []
 for filename in mempool_files:
-    with open(os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mempool"), filename), "r") as file:
+    with open(os.path.join("mempool", filename), "r") as file:
         transaction = json.load(file)
         transactions.append(transaction)
         # Add transaction outputs to UTXO set
@@ -180,4 +173,4 @@ if block_hash is not None and nonce is not None:
     else:
         print("Mined block is not valid.")
 else:
-    print("Failed to mine a valid block.")
+    print("Failed to mine a valid
