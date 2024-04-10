@@ -1,127 +1,180 @@
 import os
 import json
 import hashlib
-import time
-from typing import List, Dict
+import binascii
+import ecdsa
+import multiprocessing
+import numpy
 
 # Set the difficulty target
-TARGET_DIFFICULTY = 0x00000000000000000000000000000000000000000000000000000000000000ff
+TARGET_DIFFICULTY = "0000ffff00000000000000000000000000000000000000000000000000000000"
 
-# Define the function to validate transactions
-def is_valid_transaction(tx: Dict) -> bool:
-    # Check if the transaction has the required keys
-    required_keys = ['txid', 'version', 'locktime', 'vin', 'vout', 'size', 'weight', 'fee', 'status']
-    if not all(key in tx for key in required_keys):
+# Function to validate a block
+def validate_block(block, utxo_set):
+    # Verify coinbase transaction
+    coinbase_tx = block["coinbase_transaction"]
+    if coinbase_tx["value"] != MINER_REWARD:
         return False
+    # Additional validation for coinbase transaction if needed
 
-    # Check if input transactions are valid
-    for vin in tx['vin']:
-        if not is_valid_input(vin, tx['vout']):
+    # Verify all transactions
+    for tx in block["transactions"]:
+        if not validate_transaction(tx, utxo_set):
             return False
-
-    # Check if output values are non-negative
-    if any(vout['value'] < 0 for vout in tx['vout']):
-        return False
-
-    # Add additional validation rules as needed
-    # ...
 
     return True
 
-# Define the function to validate input transactions
-def is_valid_input(vin: Dict, vout: List[Dict]) -> bool:
-    # Check if the input transaction is referenced in the output transactions
-    txid = vin['txid']
-    vout_index = vin['vout']
-    for tx_vout in vout:
-        if txid == tx_vout['txid'] and vout_index == tx_vout['vout']:
-            return True
+# Function to validate a transaction
+def validate_transaction(transaction, utxo_set):
+    # Check that the sum of input values is >= the sum of output values
+    input_sum = sum([input["prevout"]["value"] for input in transaction["vin"]])
+    output_sum = sum([output["value"] for output in transaction["vout"]])
+    if input_sum < output_sum:
+        return False
 
-    return False
+    # Check that each input refers to an existing UTXO
+    for input in transaction["vin"]:
+        if input["prevout"]["scriptpubkey_address"] not in utxo_set:
+            return False
 
-# Define the function to mine the block
-def mine_block(transactions: List[Dict]) -> (Dict, bytes, List[str]):
-    # Create the block header
-    block_version = 1 or 2
-    block_header = {
-        'version': block_version,
-        'prev_block_hash': '0000000000000000000000000000000000000000000000000000000000000000',
-        'merkle_root': calculate_merkle_root(transactions),
-        'timestamp': int(time.time()),
-        'bits': '%064x' % TARGET_DIFFICULTY,
-        'nonce': 0
+    # Check that the transaction is correctly signed by the sender
+    for input in transaction["vin"]:
+        witness = input["witness"]
+        if not verify_witness(witness, transaction):
+            return False
+
+    return True
+
+# Function to verify the witness (signature)
+def verify_witness(witness, transaction):
+    # Extract signature and public key from witness
+    signature_hex = witness[0]
+    public_key_hex = witness[1]
+    
+    # Convert signature and public key to bytes
+    signature = binascii.unhexlify(signature_hex)
+    public_key = binascii.unhexlify(public_key_hex)
+    
+    # Extract message from the transaction data
+    transaction_data = json.dumps(transaction, sort_keys=True)
+    message = hashlib.sha256(transaction_data.encode()).digest()
+    
+    # Construct a signature object
+    signature_obj = ecdsa.util.sigdecode_der(signature, ecdsa.SECP256k1)
+
+    # Construct a public key object
+    key = ecdsa.VerifyingKey.from_string(public_key, curve=ecdsa.SECP256k1)
+    
+    # Verify the signature
+    return key.verify(signature_obj, message)
+
+# Function to construct a block
+def construct_block(transactions, utxo_set):
+    block = {
+        "transactions": [],
+        "coinbase_transaction": {}  # Placeholder for coinbase transaction
     }
+    block_size = 0
+    
+    # Include transactions until block size limit is reached
+    for tx in transactions:
+        if validate_transaction(tx, utxo_set) and block_size + len(json.dumps(tx)) <= MAX_BLOCK_SIZE:
+            block["transactions"].append(tx)
+            block_size += len(json.dumps(tx))
+            # Remove transaction inputs from UTXO set
+            for input in tx["vin"]:
+                utxo_set.remove(input["prevout"]["scriptpubkey_address"])
+    
+    # Generate and include coinbase transaction
+    coinbase_tx = generate_coinbase_transaction()
+    block["coinbase_transaction"] = coinbase_tx
+    
+    return block
 
-    # Serialize the block header
-    header_bin = serialize_header(block_header)
+# Function to generate a coinbase transaction
+def generate_coinbase_transaction():
+    coinbase_tx = {
+        "txid": "coinbase_tx_id",
+        "vin": [],
+        "vout": [
+            {
+                "value": MINER_REWARD,
+                "scriptpubkey": "scriptpubkey_value"
+            }
+        ]
+    }
+    return coinbase_tx
 
-    # Mine the block by incrementing the nonce until the hash meets the target
-    while True:
-        block_hash = hashlib.sha256(hashlib.sha256(header_bin).digest()).digest()[::-1].hex()
-        if int(block_hash, 16) < TARGET_DIFFICULTY:
-            break
-        block_header['nonce'] += 1
-        header_bin = serialize_header(block_header)
+# Function to mine a block
+def mine_block(block, nonce_start, nonce_end):
+    block_hash = ""
+    nonce = nonce_start
+    
+    # Continue mining until block hash meets difficulty target or nonce end is reached
+    while not block_hash.startswith(TARGET_DIFFICULTY) and nonce < nonce_end:
+        # Update nonce and recalculate block hash
+        block["nonce"] = nonce
+        block_serialized = json.dumps(block, sort_keys=True)
+        block_hash = hashlib.sha256(block_serialized.encode()).hexdigest()
+        nonce += 1
+    
+    return block_hash, nonce
 
-    # Create the coinbase transaction
-    coinbase_tx = create_coinbase_transaction()
+# Function to mine a block in parallel
+def mine_block_parallel(block):
+    # Create a pool of processes
+    pool = multiprocessing.Pool(processes=NUM_PROCESSES)
+    
+    # Divide the nonce range among the processes
+    nonce_range = range(0, 2**32)  # 32-bit nonce
+    nonce_ranges = numpy.array_split(nonce_range, NUM_PROCESSES)
+    
+    # Start the processes
+    results = [pool.apply_async(mine_block, args=(block, nonce_start, nonce_end)) for nonce_start, nonce_end in nonce_ranges]
+    
+    # Wait for the first process to find a valid block hash
+    for result in multiprocessing.as_completed(results):
+        block_hash, nonce = result.get()
+        if block_hash.startswith(TARGET_DIFFICULTY):
+            # Stop the other processes
+            pool.terminate()
+            return block_hash, nonce
 
-    # Serialize the coinbase transaction
-    coinbase_tx_serialized = serialize_transaction(coinbase_tx)
+    return None, None
 
-    return block_header, coinbase_tx_serialized, [coinbase_tx['txid']] + [tx['txid'] for tx in transactions]
+# Initialize UTXO set
+utxo_set = set()
 
-# Function to calculate the Merkle root
-def calculate_merkle_root(transactions: List[Dict]) -> str:
-    # Implement Merkle root calculation logic
-    # This is a simplified implementation for demonstration purposes
-    tx_hashes = [bytes.fromhex(tx['txid']) for tx in transactions]
-    if not tx_hashes:
-        return '0' * 64
-    else:
-        return hashlib.sha256(b''.join(tx_hashes)).hexdigest()
+# Read transactions from mempool folder
+mempool_files = os.listdir(MEMPOOL_DIR)
 
-# Function to serialize the block header
-def serialize_header(header: Dict) -> bytes:
-    # Implement block header serialization logic
-    # This is a simplified implementation for demonstration purposes
-    block_version = header['version'].to_bytes(4, byteorder='little')
-    prev_block_hash = bytes.fromhex(header['prev_block_hash'])
-    merkle_root = bytes.fromhex(header['merkle_root'])
-    timestamp = header['timestamp'].to_bytes(4, byteorder='little')
-    bits = bytes.fromhex(header['bits'])
-    nonce = header['nonce'].to_bytes(4, byteorder='little')
-    return block_version + prev_block_hash + merkle_root + timestamp + bits + nonce
-
-# Function to create the coinbase transaction
-def create_coinbase_transaction() -> Dict:
-    # Implement coinbase transaction creation logic
-    # This is a simplified implementation for demonstration purposes
-    return {'txid': '0000000000000000000000000000000000000000000000000000000000000000'}
-
-# Function to serialize a transaction
-def serialize_transaction(tx: Dict) -> bytes:
-    # Implement transaction serialization logic
-    # This is a simplified implementation for demonstration purposes
-    return bytes.fromhex(tx['hex'])
-
-# Load transactions from the mempool folder
-MEMPOOL_DIR = 'mempool'
 transactions = []
-for filename in os.listdir(MEMPOOL_DIR):
-    filepath = os.path.join(MEMPOOL_DIR, filename)
-    if os.path.isfile(filepath):
-        with open(filepath, 'r') as file:
-            tx = json.load(file)
-            if is_valid_transaction(tx):
-                transactions.append(tx)
+for filename in mempool_files:
+    with open(os.path.join(MEMPOOL_DIR, filename), "r") as file:
+        transaction = json.load(file)
+        transactions.append(transaction)
+        # Add transaction outputs to UTXO set
+        for output in transaction["vout"]:
+            utxo_set.add(output["scriptpubkey_address"])
 
-# Mine the block
-block_header, coinbase_tx, txids = mine_block(transactions)
+# Construct a block
+block = construct_block(transactions, utxo_set)
 
-# Write the output to output.txt
-with open('output.txt', 'w') as file:
-    file.write(json.dumps(block_header) + '\n')
-    file.write(coinbase_tx.hex() + '\n')
-    for txid in txids:
-        file.write(txid + '\n')
+# Mine the block in parallel
+block_hash, nonce = mine_block_parallel(block)
+
+# Verify the mined block
+if block_hash is not None and nonce is not None:
+    block["nonce"] = nonce
+    block["hash"] = block_hash
+    if validate_block(block, utxo_set):
+        # Write output to output.txt
+        with open("output.txt", "w") as output_file:
+            output_file.write(block_hash + "\n")
+            output_file.write(json.dumps(block["coinbase_transaction"]) + "\n")
+            for tx in block["transactions"]:
+                output_file.write(tx["txid"] + "\n")
+    else:
+        print("Mined block is not valid.")
+else:
+    print("Failed to mine a valid block.")
