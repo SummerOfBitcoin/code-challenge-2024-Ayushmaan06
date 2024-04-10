@@ -1,8 +1,8 @@
 import os
 import json
 import hashlib
-import binascii
 import multiprocessing
+import math
 
 # Constants
 DIFFICULTY_TARGET = "0000ffff00000000000000000000000000000000000000000000000000000000"
@@ -48,21 +48,8 @@ def validate_transaction(transaction, utxo_set):
 
 # Function to verify the witness (signature)
 def verify_witness(witness, transaction):
-    # Extract signature and public key from witness
-    signature_hex = witness[0]
-    public_key_hex = witness[1]
-    
-    # Convert signature and public key to bytes
-    signature = binascii.unhexlify(signature_hex)
-    public_key = binascii.unhexlify(public_key_hex)
-    
-    # Extract message from the transaction data
-    transaction_data = json.dumps(transaction, sort_keys=True)
-    message = hashlib.sha256(transaction_data.encode()).digest()
-    
-    # Custom signature verification logic or alternative cryptographic scheme
-
-    return True  # Placeholder, replace with actual logic
+    # This function needs to be implemented without ecdsa
+    pass
 
 # Function to construct a block
 def construct_block(transactions, utxo_set):
@@ -123,7 +110,7 @@ def mine_block_parallel(block):
     
     # Divide the nonce range among the processes
     nonce_range = range(0, 2**32)  # 32-bit nonce
-    nonce_ranges = [((i * len(nonce_range)) // NUM_PROCESSES, ((i + 1) * len(nonce_range)) // NUM_PROCESSES) for i in range(NUM_PROCESSES)]
+    nonce_ranges = split_range(nonce_range, NUM_PROCESSES)
     
     # Start the processes
     results = [pool.apply_async(mine_block, args=(block, nonce_start, nonce_end)) for nonce_start, nonce_end in nonce_ranges]
@@ -138,15 +125,21 @@ def mine_block_parallel(block):
 
     return None, None
 
+# Function to split a range into equal parts
+def split_range(nonce_range, num_parts):
+    range_size = len(nonce_range)
+    part_size = math.ceil(range_size / num_parts)
+    return [(i * part_size, min(range_size, (i + 1) * part_size)) for i in range(num_parts)]
+
 # Initialize UTXO set
 utxo_set = set()
 
 # Read transactions from mempool folder
-mempool_files = os.listdir("mempool")
+mempool_files = os.listdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mempool"))
 
 transactions = []
 for filename in mempool_files:
-    with open(os.path.join("mempool", filename), "r") as file:
+    with open(os.path.join(os.path.join(os.path.dirname(os.path.abspath(__file__)), "mempool"), filename), "r") as file:
         transaction = json.load(file)
         transactions.append(transaction)
         # Add transaction outputs to UTXO set
