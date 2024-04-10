@@ -1,14 +1,14 @@
 import os
 import json
 import hashlib
-import multiprocessing
+import concurrent.futures
 import math
 
 # Constants
 DIFFICULTY_TARGET = "0000ffff00000000000000000000000000000000000000000000000000000000"
 MAX_BLOCK_SIZE = 1000000  # Maximum block size in bytes
 MINER_REWARD = 12.5  # Bitcoin reward for mining a block
-NUM_PROCESSES = multiprocessing.cpu_count()  # Number of processes to use for mining
+NUM_PROCESSES = os.cpu_count()  # Number of processes to use for mining
 
 # Function to validate a block
 def validate_block(block):
@@ -106,22 +106,19 @@ def mine_block(block, nonce_start, nonce_end):
 # Function to mine a block in parallel
 def mine_block_parallel(block):
     # Create a pool of processes
-    pool = multiprocessing.Pool(processes=NUM_PROCESSES)
-    
-    # Divide the nonce range among the processes
-    nonce_range = range(0, 2**32)  # 32-bit nonce
-    nonce_ranges = split_range(nonce_range, NUM_PROCESSES)
-    
-    # Start the processes
-    results = [pool.apply_async(mine_block, args=(block, nonce_start, nonce_end)) for nonce_start, nonce_end in nonce_ranges]
-    
-    # Wait for the first process to find a valid block hash
-    for result in multiprocessing.as_completed(results):
-        block_hash, nonce = result.get()
-        if block_hash.startswith(DIFFICULTY_TARGET):
-            # Stop the other processes
-            pool.terminate()
-            return block_hash, nonce
+    with concurrent.futures.ProcessPoolExecutor() as executor:
+        # Divide the nonce range among the processes
+        nonce_range = range(0, 2**32)  # 32-bit nonce
+        nonce_ranges = split_range(nonce_range, NUM_PROCESSES)
+        
+        # Start the processes
+        futures = {executor.submit(mine_block, block, nonce_start, nonce_end): (nonce_start, nonce_end) for nonce_start, nonce_end in nonce_ranges}
+        
+        # Wait for the first process to find a valid block hash
+        for future in concurrent.futures.as_completed(futures):
+            block_hash, nonce = future.result()
+            if block_hash.startswith(DIFFICULTY_TARGET):
+                return block_hash, nonce
 
     return None, None
 
