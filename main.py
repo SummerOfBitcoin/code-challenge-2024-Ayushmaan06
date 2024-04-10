@@ -173,4 +173,4 @@ if block_hash is not None and nonce is not None:
     else:
         print("Mined block is not valid.")
 else:
-    print("Failed to mine a valid
+    print("Failed to mine a valid block.")
